@@ -1,0 +1,10 @@
+node_modules/
+.next/
+.copilot-sdk/
+out/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo
+
+bun.lock
