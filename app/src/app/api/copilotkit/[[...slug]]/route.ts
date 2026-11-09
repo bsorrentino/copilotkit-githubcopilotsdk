@@ -12,8 +12,11 @@ export const runtime = "nodejs";
 /** The default agent translates SDK turns into AG-UI for the existing sidebar. */
 const copilotSdkAgent = new CopilotSdkAgent();
 
-/** The runtime exposes the default agent through the CopilotKit API. */
-const copilotRuntime = new CopilotRuntime({ agents: { default: copilotSdkAgent } });
+/** This single-user starter lets its anonymous caller list and clear local threads. */
+const copilotRuntime = new CopilotRuntime({
+  agents: { default: copilotSdkAgent },
+  threads: { access: "open" },
+});
 
 /** Next.js serves this handler at the same path configured in the browser provider. */
 const handler = createCopilotRuntimeHandler({ runtime: copilotRuntime, basePath: "/api/copilotkit" });
