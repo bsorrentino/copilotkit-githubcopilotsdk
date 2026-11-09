@@ -51,7 +51,7 @@ async function openSession(threadId: string): Promise<CopilotSession> {
   }
 
   // New threads start with the configured model; later turns resume the stored transcript.
-  return client.createSession({ sessionId, model, streaming: true, threads: { access: "open"} });
+  return client.createSession({ sessionId, model, streaming: true });
 }
 
 /**
