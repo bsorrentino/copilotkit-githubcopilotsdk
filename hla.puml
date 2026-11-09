@@ -1,0 +1,38 @@
+@startuml
+title CopilotKit GitHub Copilot SDK — High-Level Architecture
+left to right direction
+skinparam componentStyle rectangle
+
+actor User
+
+package "Application" {
+  [Web UI] as UI
+  [CopilotKit API Route\n/api/copilotkit/*] as API
+}
+
+package "Agent" {
+  [Copilot SDK Agent] as AG
+}
+
+Package "GitHub Copilot" {
+  [Copilot SDK / Runtime] as SDK
+  [Model and Tool Services] as Services
+}
+
+User --> UI : Interacts
+UI --> API : Agent requests
+API --> AG : Dispatches request
+AG --> SDK : Runs agent
+SDK --> Services : Model / tool calls
+
+Services --> SDK : Results
+SDK --> Agent : Agent events
+AG --> API : Responses / stream
+API --> UI : Streamed updates
+UI --> User : Displays response
+
+note bottom of API
+  Conceptual view; verify component boundaries
+  and external service details against the code.
+end note
+@enduml

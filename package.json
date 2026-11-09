@@ -2,26 +2,13 @@
   "name": "copilotkit-github-copilot-sdk",
   "version": "0.1.0",
   "private": true,
+  "workspaces": ["app", "copilot-sdk-agent"],
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@ag-ui/client": "1.0.2",
-    "@copilotkit/react-core": "latest",
-    "@copilotkit/runtime": "latest",
-    "@github/copilot-sdk": "latest",
-    "next": "^16.0.0",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "rxjs": "7.8.1"
-  },
-  "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/react": "^19.0.0",
-    "@types/react-dom": "^19.0.0",
-    "typescript": "^5.0.0"
+    "dev": "npm run dev --workspace app",
+    "build": "npm run build --workspace app",
+    "start": "npm run start --workspace app",
+    "typecheck": "npm run typecheck --workspace copilot-sdk-agent && npm run typecheck --workspace app",
+    "clean": "rm -rf .copilot-sdk .next app/.next .next-profiles app/.next-profiles out app/out dist app/dist copilot-sdk-agent/dist build app/build copilot-sdk-agent/build coverage app/coverage copilot-sdk-agent/coverage .cache app/.cache copilot-sdk-agent/.cache .turbo app/.turbo copilot-sdk-agent/.turbo tsconfig.tsbuildinfo app/tsconfig.tsbuildinfo copilot-sdk-agent/tsconfig.tsbuildinfo",
+    "clean:all": "npm run clean && rm -rf node_modules app/node_modules copilot-sdk-agent/node_modules"
   }
 }
