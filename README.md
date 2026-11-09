@@ -12,6 +12,8 @@ This repository is a two-package workspace. `app/` contains the Next.js CopilotK
 
 The adapter in `copilot-sdk-agent/src/copilot-sdk-agent.ts` resumes a Copilot SDK session using the CopilotKit thread ID. It sends only the newest user message because the SDK retains prior turns. The SDK session is disconnected after each response while its transcript remains resumable in `app/.copilot-sdk/` by default. Set `COPILOT_DATA_DIR` to a persistent, writable directory when deploying with the bundled runtime. The default CopilotKit runner keeps its own thread history only in process memory, so a production deployment needs a persistent runner if the UI must reload older messages after a restart.
 
+The chat receives AG-UI text chunks as Copilot produces them. When Copilot starts a tool, the chat also shows a short `Using <tool>…` progress message. Tool arguments and results are not included in that status. Models that do not emit text deltas still show their completed response.
+
 The SDK client uses `mode: "copilot-cli"`. Frontend tools, shared state, attachments, and permission prompts require explicit AG-UI mappings before use. This starter has no application user authentication, so serve it to one trusted user locally; add thread ownership checks and per-user SDK credentials before serving multiple users. See the [CopilotKit runner](https://docs.copilotkit.ai/backend/agent-runner) and [Copilot SDK multi-user](https://docs.github.com/en/copilot/how-tos/copilot-sdk/setup/multi-tenancy) guides.
 
 Use `npm run typecheck` and `npm run build` after installing dependencies.

@@ -26,6 +26,9 @@ const model = process.env.COPILOT_MODEL || "auto";
 /** Prefix that separates this app's sessions from unrelated Copilot CLI sessions. */
 const sessionPrefix = "copilotkit-";
 
+/** Maximum wait for one SDK turn, matching the SDK's default sendAndWait timeout in milliseconds. */
+const turnTimeoutMs = 60_000 * 5;
+
 /**
  * Opens the SDK session associated with a CopilotKit thread.
  *
@@ -48,7 +51,7 @@ async function openSession(threadId: string): Promise<CopilotSession> {
   }
 
   // New threads start with the configured model; later turns resume the stored transcript.
-  return client.createSession({ sessionId, model, streaming: true });
+  return client.createSession({ sessionId, model, streaming: true, threads: { access: "open"} });
 }
 
 /**
@@ -62,7 +65,7 @@ export class CopilotSdkAgent extends AbstractAgent {
    * Streams the newest user prompt from one CopilotKit thread through its SDK session.
    *
    * @param input - AG-UI run input; its last message must be nonempty user text.
-   * @returns A cold event stream whose subscription owns the SDK turn and cancellation.
+   * @returns A cold event stream of assistant chunks and tool-start status messages; its subscription owns the SDK turn and cancellation.
    * @throws Stream errors if session startup, the model request, or cleanup fails.
    * @remarks Unsubscribing aborts the active SDK turn; normal completion disconnects the session while preserving its transcript.
    */
@@ -70,6 +73,8 @@ export class CopilotSdkAgent extends AbstractAgent {
     return new Observable<BaseEvent>((subscriber) => {
       let session: CopilotSession | undefined;
       let cancelled = false;
+      /** Rejects the active completion wait when the browser unsubscribes. */
+      let cancelCompletion: ((reason: Error) => void) | undefined;
       const lastMessage = input.messages.at(-1);
       const prompt = lastMessage?.role === "user" && typeof lastMessage.content === "string"
         ? lastMessage.content.trim()
@@ -81,11 +86,86 @@ export class CopilotSdkAgent extends AbstractAgent {
         return;
       }
 
-      const messageId = crypto.randomUUID();
-      let emittedText = false;
       const { threadId, runId } = input;
+      /** SDK message currently open in AG-UI; absent between messages and progress updates. */
+      let activeMessageId: string | undefined;
+      /** Text already forwarded for the open SDK message, used to avoid repeating the final payload. */
+      let activeText = "";
+      /** SDK messages already closed in AG-UI, including messages finalized before the turn becomes idle. */
+      const completedMessageIds = new Set<string>();
 
-      /** Owns the asynchronous SDK turn and closes the AG-UI stream after cleanup. */
+      /**
+       * Closes the current assistant message before another SDK message or tool status starts.
+       *
+       * @remarks AG-UI requires each started text message to end before the run finishes.
+       */
+      function endMessage(): void {
+        // No AG-UI end event is valid until text has opened a message.
+        if (!activeMessageId) return;
+        subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId: activeMessageId });
+        completedMessageIds.add(activeMessageId);
+        activeMessageId = undefined;
+        activeText = "";
+      }
+
+      /**
+       * Appends one SDK text chunk to its matching AG-UI assistant message.
+       *
+       * @param sdkMessageId - SDK identifier shared by deltas and their final message.
+       * @param delta - New text only; empty chunks produce no AG-UI event.
+       * @remarks SDK callbacks and the final response run on this subscription's event loop.
+       */
+      function appendText(sdkMessageId: string, delta: string): void {
+        // Empty or late chunks cannot change a completed chat message.
+        if (!delta || subscriber.closed || completedMessageIds.has(sdkMessageId)) return;
+        if (activeMessageId !== sdkMessageId) {
+          endMessage();
+          activeMessageId = sdkMessageId;
+          subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId: sdkMessageId, role: "assistant" });
+        }
+        activeText += delta;
+        subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: sdkMessageId, delta });
+      }
+
+      /**
+       * Completes a streamed SDK message, adding any final text that its deltas omitted.
+       *
+       * @param sdkMessageId - Identifier of the finalized SDK message.
+       * @param content - Authoritative full text; empty tool-only messages stay out of chat.
+       * @remarks A non-prefix correction cannot be expressed as an AG-UI append, so streamed text remains visible as received.
+       */
+      function finishText(sdkMessageId: string, content: string): void {
+        // The final SDK response can repeat a message already finalized by its event callback.
+        if (completedMessageIds.has(sdkMessageId) || subscriber.closed) return;
+        if (content.startsWith(activeMessageId === sdkMessageId ? activeText : "")) {
+          appendText(sdkMessageId, content.slice(activeMessageId === sdkMessageId ? activeText.length : 0));
+        }
+        if (activeMessageId === sdkMessageId) endMessage();
+      }
+
+      /**
+       * Shows a tool's public display name as a completed progress line in the chat.
+       *
+       * @param title - SDK tool title or name; arguments and results are intentionally excluded.
+       */
+      function showToolProgress(title: string): void {
+        // A stopped browser stream must not receive new progress messages.
+        if (subscriber.closed) return;
+        endMessage();
+        const progressId = crypto.randomUUID();
+        subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId: progressId, role: "assistant" });
+        subscriber.next({ type: EventType.TEXT_MESSAGE_CONTENT, messageId: progressId, delta: `Using ${title}…` });
+        subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId: progressId });
+      }
+
+      /**
+       * Runs one SDK turn and forwards live session events until its response completes.
+       *
+       * Opens the thread session before starting the AG-UI run, then disconnects after
+       * the response so the SDK transcript can be resumed on a later request.
+       * @throws For startup, model, transport, or disconnect errors while subscribed.
+       * @remarks Cancellation aborts the session from the Observable teardown path.
+       */
       async function execute(): Promise<void> {
         try {
           // Establish the session before emitting run events, so startup errors become stream errors.
@@ -96,31 +176,77 @@ export class CopilotSdkAgent extends AbstractAgent {
           }
 
           subscriber.next({ type: EventType.RUN_STARTED, threadId, runId });
-          subscriber.next({ type: EventType.TEXT_MESSAGE_START, messageId, role: "assistant" });
+          /** Client-owned marker echoed by user.message when this queued prompt is consumed. */
+          const clientTurnId = crypto.randomUUID();
+          /** Prevents an unrelated idle event from closing this AG-UI run. */
+          let requestStarted = false;
+          /** SDK user-message ID returned by send, used for autopilot completion correlation. */
+          let sentMessageId: string | undefined;
+          /** Settles the wait when this turn emits its terminal SDK event. */
+          //let resolveCompletion!: () => void;
+          /** Fails the wait on SDK error, cancellation, abort, or timeout. */
+          //let rejectCompletion!: (reason: Error) => void;
+          
+          const { 
+            promise:  completion, 
+            resolve:  resolveCompletion, 
+            reject:   rejectCompletion 
+          } = Promise.withResolvers<void>();
 
-          // SDK deltas are ephemeral; ignore sub-agent replies because they are not the chat response.
-          const unsubscribe = session.on("assistant.message_delta", (event) => {
-            // A child agent's text and a cancelled browser stream must not enter the main chat.
+          cancelCompletion = rejectCompletion;
+
+          // Handle a terminal event even if it arrives before session.send resolves.
+          void completion.catch(() => undefined);
+
+          // Keep assistant chunks separate by SDK message ID and surface tool starts as chat progress.
+          const unsubscribe = session.on((event) => {
             if (event.agentId || subscriber.closed) return;
-            emittedText = true;
-            subscriber.next({
-              type: EventType.TEXT_MESSAGE_CONTENT,
-              messageId,
-              delta: event.data.deltaContent,
-            });
+            switch (event.type) {
+              case "user.message":
+                if (event.data.clientTurnId === clientTurnId) requestStarted = true;
+                break;
+              case "assistant.message_delta":
+                appendText(event.data.messageId, event.data.deltaContent);
+                break;
+              case "assistant.message":
+                finishText(event.data.messageId, event.data.content);
+                break;
+              case "tool.execution_start":
+                showToolProgress( /*event.data.toolTitle || */ event.data.toolName);
+                break;
+              case "session.idle":
+                // Only the idle event after our user message completes this turn.
+                if (requestStarted && event.data.mode !== "autopilot") {
+                  if (event.data.aborted) rejectCompletion(new Error("The Copilot turn was aborted."));
+                  else resolveCompletion();
+                }
+                break;
+              case "session.autopilot_stopped":
+                if (sentMessageId && event.data.requestId === sentMessageId) {
+                  if (event.data.reason === "aborted" || event.data.reason === "error") {
+                    rejectCompletion(new Error(`The Copilot turn ${event.data.reason}.`));
+                  } else {
+                    resolveCompletion();
+                  }
+                }
+                break;
+              case "session.error":
+                // This session belongs to one CopilotKit thread and has one in-flight turn.
+                rejectCompletion(new Error(event.data.message));
+                break;
+            }
           });
 
+          const timeout = setTimeout(() => {
+            rejectCompletion(new Error("Timed out waiting for Copilot to finish the turn."));
+          }, turnTimeoutMs);
           try {
-            const response = await session.sendAndWait({ prompt });
-            // Some SDK runtimes return a final message without emitting text deltas.
-            if (!emittedText && response?.data.content && !subscriber.closed) {
-              subscriber.next({
-                type: EventType.TEXT_MESSAGE_CONTENT,
-                messageId,
-                delta: response.data.content,
-              });
-            }
+            // send queues the prompt while SDK callbacks forward deltas immediately.
+            sentMessageId = await session.send({ prompt, clientTurnId });
+            await completion;
           } finally {
+            cancelCompletion = undefined;
+            clearTimeout(timeout);
             unsubscribe();
           }
 
@@ -128,7 +254,7 @@ export class CopilotSdkAgent extends AbstractAgent {
           await session.disconnect();
           session = undefined;
           if (subscriber.closed) return;
-          subscriber.next({ type: EventType.TEXT_MESSAGE_END, messageId });
+          endMessage();
           subscriber.next({ type: EventType.RUN_FINISHED, threadId, runId });
           subscriber.complete();
         } catch (error) {
@@ -143,6 +269,7 @@ export class CopilotSdkAgent extends AbstractAgent {
       // CopilotKit's stop path unsubscribes; aborting also stops SDK tool activity.
       return () => {
         cancelled = true;
+        cancelCompletion?.(new Error("The CopilotKit stream was cancelled."));
         // Cancellation is best effort because the request may already have finished.
         if (session) void session.abort().catch(() => undefined);
       };
