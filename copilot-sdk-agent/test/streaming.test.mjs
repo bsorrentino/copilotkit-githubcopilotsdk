@@ -11,6 +11,10 @@ class FakeSession {
   listeners = new Set();
   /** Last submitted prompt and correlation marker. */
   sendOptions;
+  /** Number of SDK abort requests made while this session was active. */
+  abortCount = 0;
+  /** Number of connection closures after completion or cancellation. */
+  disconnectCount = 0;
 
   /** Registers a live event listener and returns its unsubscribe function. */
   on(listener) {
@@ -30,10 +34,14 @@ class FakeSession {
   }
 
   /** Ends the fake connection after the AG-UI run finishes. */
-  async disconnect() {}
+  async disconnect() {
+    this.disconnectCount += 1;
+  }
 
   /** Accepts cancellation without starting additional fake work. */
-  async abort() {}
+  async abort() {
+    this.abortCount += 1;
+  }
 }
 
 /** Shares the latest fake session with the test while matching the adapter's SDK calls. */
@@ -88,4 +96,46 @@ test("streams text before the SDK turn finishes", async () => {
   await finished;
   expect(events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => event.delta)).toEqual(["Hel", "lo"]);
   expect(events.at(-1)?.type).toBe("RUN_FINISHED");
+});
+
+/** Confirms that stopping a live AG-UI subscription aborts its Copilot SDK turn. */
+test("unsubscribing aborts the active SDK session", async () => {
+  const subscription = new CopilotSdkAgent().run({
+    threadId: "cancellation-test",
+    runId: "run-2",
+    messages: [{ id: "input-2", role: "user", content: "wait" }],
+  }).subscribe();
+
+  // Wait until the SDK turn is active so the stop exercises the session abort path.
+  while (!FakeClient.session?.sendOptions || FakeClient.session.sendOptions.prompt !== "wait") {
+    await Promise.resolve();
+  }
+  const session = FakeClient.session;
+  subscription.unsubscribe();
+
+  // Observable teardown requests abort immediately; execute() closes the connection afterward.
+  expect(session.abortCount).toBe(1);
+  while (session.disconnectCount === 0) await Promise.resolve();
+  expect(session.listeners.size).toBe(0);
+});
+
+/** Confirms that the runner's abortRun call reaches SDK abort and ends the AG-UI run. */
+test("abortRun detaches the active run and aborts the SDK session", async () => {
+  const agent = new CopilotSdkAgent();
+  agent.threadId = "stop-button-test";
+  agent.messages = [{ id: "input-3", role: "user", content: "keep working" }];
+  const run = agent.runAgent({ runId: "run-3" });
+
+  // The runner can stop only a started run, so wait until the SDK receives its prompt.
+  while (!FakeClient.session?.sendOptions || FakeClient.session.sendOptions.prompt !== "keep working") {
+    await Promise.resolve();
+  }
+  const session = FakeClient.session;
+  agent.abortRun();
+
+  // A detached AG-UI pipeline may reject its completion; the runner handles that outcome.
+  await Promise.allSettled([run]);
+  expect(session.abortCount).toBe(1);
+  expect(session.disconnectCount).toBe(1);
+  expect(agent.isRunning).toBe(false);
 });
