@@ -8,6 +8,7 @@ import type { NextConfig } from "next";
 /** The Copilot SDK loads Koffi's platform-specific .node file at runtime. */
 const nextConfig: NextConfig = {
   serverExternalPackages: ["@github/copilot-sdk"],
+  transpilePackages: ["copilot-sdk-agent"],
 };
 
 export default nextConfig;

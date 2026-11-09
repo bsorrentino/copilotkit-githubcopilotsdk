@@ -8,12 +8,12 @@ import { CopilotClient, RuntimeConnection, type CopilotSession } from "@github/c
 import { join } from "node:path";
 import { Observable } from "rxjs";
 
-/** Empty mode requires an explicit home for session transcripts and settings. */
+/** Session transcripts and settings live in an app-owned directory unless configured otherwise. */
 const dataDirectory = process.env.COPILOT_DATA_DIR || join(process.cwd(), ".copilot-sdk");
 
 /** The SDK client shares one CLI connection across requests in this Node.js process. */
 const client = new CopilotClient({
-  mode: "copilot-cli",  // "empty",
+  mode: "copilot-cli",
   baseDirectory: dataDirectory,
   ...(process.env.COPILOT_RUNTIME_URL
     ? { connection: RuntimeConnection.forUri(process.env.COPILOT_RUNTIME_URL) }
@@ -47,7 +47,7 @@ async function openSession(threadId: string): Promise<CopilotSession> {
     return client.resumeSession(sessionId, { streaming: true });
   }
 
-  // Empty mode exposes no ambient CLI tools or workspace capabilities to this chat.
+  // New threads start with the configured model; later turns resume the stored transcript.
   return client.createSession({ sessionId, model, streaming: true });
 }
 

@@ -4,7 +4,7 @@
  * @remarks The SDK and its credentials run on Node.js; this module does not render UI or manage user accounts.
  */
 import { CopilotRuntime, createCopilotRuntimeHandler } from "@copilotkit/runtime/v2";
-import { CopilotSdkAgent } from "@/lib/copilot-sdk-agent";
+import { CopilotSdkAgent } from "copilot-sdk-agent";
 
 /** The Copilot SDK requires a Node.js runtime for its CLI connection. */
 export const runtime = "nodejs";

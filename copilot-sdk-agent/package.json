@@ -1,0 +1,24 @@
+{
+  "name": "copilot-sdk-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/copilot-sdk-agent.ts",
+      "default": "./src/copilot-sdk-agent.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ag-ui/client": "1.0.2",
+    "@github/copilot-sdk": "latest",
+    "rxjs": "7.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.0.0"
+  }
+}
