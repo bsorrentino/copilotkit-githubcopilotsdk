@@ -62,6 +62,20 @@ async function openSession(threadId: string): Promise<CopilotSession> {
  */
 export class CopilotSdkAgent extends AbstractAgent {
   /**
+   * Stops the active AG-UI run when CopilotKit's runner receives a Stop request.
+   *
+   * Detaching the run unsubscribes its Observable, whose teardown aborts the
+   * matching SDK session. The runner owns the terminal run event and UI state.
+   *
+   * @returns Nothing; session abort and run finalization continue asynchronously.
+   * @remarks The runtime clones this agent per request, so detachment affects only that run.
+   */
+  override abortRun(): void {
+    // Stop must detach the AG-UI pipeline before its Observable can abort the SDK turn.
+    void this.detachActiveRun();
+  }
+
+  /**
    * Streams the newest user prompt from one CopilotKit thread through its SDK session.
    *
    * @param input - AG-UI run input; its last message must be nonempty user text.
@@ -212,7 +226,15 @@ export class CopilotSdkAgent extends AbstractAgent {
                 finishText(event.data.messageId, event.data.content);
                 break;
               case "tool.execution_start":
-                showToolProgress( /*event.data.toolTitle || */ event.data.toolName);
+                showToolProgress( 
+                  `<div style="max-width:600px; margin:20px auto; border:1px solid #d0d7de; border-radius:8px; overflow:hidden; font-family:sans-serif;">
+                    <div style="background:#f6f8fa; padding:8px 12px; border-bottom:1px solid #d0d7de; font-size:13px; font-weight:bold; color:#24292f;">
+                    ${event.data.toolTitle ?? ''}
+                    </div>
+                    <pre style="margin:0; padding:12px; background:#0d1117; color:#c9d1d9; font-family:Consolas,Menlo,monospace; font-size:14px; line-height:1.5; overflow-x:auto;">
+                      <code>${event.data.toolName}(${JSON.stringify(event.data.arguments?? '{}')})</code>
+                    </pre>
+                  </div>`);
                 break;
               case "session.idle":
                 // Only the idle event after our user message completes this turn.
@@ -266,8 +288,9 @@ export class CopilotSdkAgent extends AbstractAgent {
 
       void execute();
 
-      // CopilotKit's stop path unsubscribes; aborting also stops SDK tool activity.
+      // Detaching the active run unsubscribes here; aborting also stops SDK tool activity.
       return () => {
+        console.log( "Cancelling CopilotKit stream" )
         cancelled = true;
         cancelCompletion?.(new Error("The CopilotKit stream was cancelled."));
         // Cancellation is best effort because the request may already have finished.
